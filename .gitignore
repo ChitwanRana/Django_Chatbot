@@ -1,0 +1,6 @@
+.venv/
+.env/
+__pycache__/
+vectorstore/
+chatbot_db
+db.sqlite3

@@ -1,0 +1,83 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with AI</title>
+    <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+    <div class="page-container">
+        <!-- Sidebar for Threads -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <a href="{% url 'new_chat' %}" class="new-chat-btn">
+                    <i class="fa-solid fa-plus"></i> New Chat
+                </a>
+                <div class="sidebar-controls">
+                    <button id="upload-btn" title="Upload PDF"><i class="fa-solid fa-arrow-up-from-bracket"></i></button>
+                    <input type="file" id="pdf-upload-input" accept=".pdf" hidden>
+                </div>
+            </div>
+            <div class="threads-list">
+                {% for thread in threads %}
+                <a href="{% url 'chat_page' thread_id=thread.thread_id %}" class="thread-item {% if thread.thread_id == current_thread_id %}active{% endif %}">
+                    <span class="thread-name">
+                        <i class="fa-regular fa-message"></i> {{ thread.thread_id|truncatechars:25 }}
+                    </span>
+                    <form action="{% url 'delete_thread' thread_id=thread.thread_id %}" method="POST" class="delete-thread-form">
+                        {% csrf_token %}
+                        <button type="submit" class="delete-btn" title="Delete Chat">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </form>
+                </a>
+                {% endfor %}
+            </div>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <i class="fa-solid fa-user"></i> {{ user.username }}
+                </div>
+                <a href="{% url 'logout' %}" class="logout-btn" title="Logout">
+                    <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                </a>
+            </div>
+        </div>
+
+        <!-- Main Chat Window -->
+        <div class="chat-window">
+            <div class="chat-messages" id="chat-messages">
+                {% if not messages %}
+                <div class="empty-chat-prompt">
+                    <h1>Smart Assistant</h1>
+                    <p>Ask me anything, or upload a PDF to start.</p>
+                </div>
+                {% endif %}
+                {% for message in messages %}
+                    <div class="message {{ message.role }}">
+                        <div class="message-icon">
+                            {% if message.role == 'user' %}
+                                <i class="fa-solid fa-user"></i>
+                            {% else %}
+                                <i class="fa-solid fa-robot"></i>
+                            {% endif %}
+                        </div>
+                        <div class="message-content">{{ message.content|linebreaksbr }}</div>
+                    </div>
+                {% endfor %}
+            </div>
+            <div class="chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea id="user-input" placeholder="Message Smart Assistant..." rows="1"></textarea>
+                    <button id="send-btn" title="Send Message"><i class="fa-solid fa-paper-plane"></i></button>
+                </div>
+                <p class="footer-text">AI can make mistakes. Consider checking important information.</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="{% static 'js/chat.js' %}"></script>
+</body>
+</html>
