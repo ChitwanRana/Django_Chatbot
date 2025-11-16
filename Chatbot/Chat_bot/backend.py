@@ -125,17 +125,43 @@ chatbot = graph.compile(checkpointer=checkpointer)
 
 # ============= UTILS =============
 def process_user_query(thread_id, user_input):
-    from langchain_core.messages import HumanMessage, AIMessage
+    """
+    Process user input as a stream and yield AI response chunks.
+    """
+    from langchain_core.messages import HumanMessage
     CONFIG = {"configurable": {"thread_id": thread_id}}
-    ai_response = ""
-    for message_chunk, _ in chatbot.stream(
+    
+    # The event stream format is "event: <event_name>\ndata: <data>\n\n"
+    # For simplicy, we'll just yield the data chunks.
+    for chunk in chatbot.stream(
         {"messages": [HumanMessage(content=user_input)], "query": user_input},
         config=CONFIG,
-        stream_mode="messages",
+        stream_mode="values", # Use "values" to get the content of the nodes
     ):
-        if isinstance(message_chunk, AIMessage):
-            ai_response += message_chunk.content
-    return ai_response.strip()
+        # We are interested in the output of the 'chat_node'
+        if "messages" in chunk:
+            last_message = chunk["messages"][-1]
+            if last_message.content:
+                yield last_message.content
+
+def get_thread_history(thread_id):
+    """Retrieve message history for a given thread."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    
+    history = []
+    thread_state = checkpointer.get({"configurable": {"thread_id": thread_id}})
+    
+    if thread_state:
+        for msg in thread_state["values"]["messages"]:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            history.append({"role": role, "content": msg.content})
+            
+    return history
+
+def delete_thread_history(thread_id):
+    """Deletes a thread's history from the checkpointer."""
+    config = {"configurable": {"thread_id": thread_id}}
+    checkpointer.put(config, None) # Deleting by saving None
 
 def retrieve_all_threads():
     all_threads = set()

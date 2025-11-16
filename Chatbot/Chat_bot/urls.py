@@ -18,11 +18,27 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path("", views.chat_page, name="chat_page"),
-    path("login/", views.login_view, name="login"),
-    path("logout/", views.logout_view, name="logout"),
-    path("stream/", views.chat_stream, name="chat_stream"),
-    path("upload_pdf/", views.upload_pdf, name="upload_pdf"),
+    # Redirect root to a new chat, or you can change it to a landing page
+    path('', views.chat_page, name='home'), 
+    
+    # Page for a specific chat thread
+    path('chat/<str:thread_id>/', views.chat_page, name='chat_page'),
+    
+    # Creates a new chat thread and redirects to it
+    path('new/', views.new_chat, name='new_chat'),
+    
+    # Deletes a chat thread
+    path('delete/<str:thread_id>/', views.delete_thread, name='delete_thread'),
+    
+    # SSE streaming endpoint for a specific thread
+    path('stream/chat/<str:thread_id>/', views.chat_stream, name='chat_stream'),
+    
+    # PDF upload endpoint
+    path('upload_pdf/', views.upload_pdf, name='upload_pdf'),
+    
+    # Auth
+    path('login/', views.login_view, name='login'),
+    path('logout/', views.logout_view, name='logout'),
 ]
 
 
