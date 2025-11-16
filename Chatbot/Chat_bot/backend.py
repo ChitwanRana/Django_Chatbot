@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+import os
+import sqlite3
+import requests
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -11,8 +15,6 @@ from langchain_community.vectorstores import FAISS
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from dotenv import load_dotenv
-import os, sqlite3, requests
 
 dotenv_path = os.path.join(os.getcwd(), ".env")
 load_dotenv(dotenv_path)
@@ -62,24 +64,36 @@ search_tool = DuckDuckGoSearchRun(region="us-en")
 def calculator(first_num: float, second_num: float, operation: str) -> dict:
     """Calculator that performs basic arithmetic operations."""
     try:
-        if operation == "add": result = first_num + second_num
-        elif operation == "sub": result = first_num - second_num
-        elif operation == "mul": result = first_num * second_num
-        elif operation == "div":
-            if second_num == 0: return {"error": "Division by zero!"}
-            result = first_num / second_num
-        else:
-            return {"error": f"Unsupported operation '{operation}'"}
-        return {"result": result}
+        ops = {
+            "+": lambda a,b: a+b,
+            "add": lambda a,b: a+b,
+            "-": lambda a,b: a-b,
+            "sub": lambda a,b: a-b,
+            "*": lambda a,b: a*b,
+            "mul": lambda a,b: a*b,
+            "/": lambda a,b: a/b if b != 0 else "DivisionByZero",
+            "div": lambda a,b: a/b if b != 0 else "DivisionByZero",
+        }
+        op = operation.strip().lower()
+        if op in ops:
+            return {"result": ops[op](first_num, second_num)}
+        return {"error": f"Unsupported operation '{operation}'"}
     except Exception as e:
         return {"error": str(e)}
 
 @tool("Stock_Price")
 def get_stock_price(symbol: str) -> dict:
     """Stock Price Retriever that fetches Stock Data."""
-    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey=C9PE94QUEW9VWGFM"
-    r = requests.get(url)
-    return r.json()
+    av_key = os.getenv("ALPHAVANTAGE_API_KEY")
+    if not av_key:
+        return {"error": "ALPHAVANTAGE_API_KEY not configured"}
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={av_key}"
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 tools = [search_tool, get_stock_price, calculator]
 llm_with_tools = llm.bind_tools(tools)
@@ -91,20 +105,29 @@ class ChatState(TypedDict):
     retrieved_context: str
 
 def retrieve_node(state: ChatState):
-    query = state["query"]
-    if os.path.exists(VECTOR_STORE_PATH):
-        vectorstore = load_vectorstore()
-        docs = vectorstore.similarity_search(query, k=3)
-        context = "\n\n".join([d.page_content for d in docs])
-    else:
-        context = "(No document uploaded yet)"
+    query = state.get("query", "")
+    context = ""
+    try:
+        if os.path.isdir(VECTOR_STORE_PATH) and any(os.scandir(os.path.dirname(VECTOR_STORE_PATH))):
+            vectorstore = load_vectorstore()
+            docs = vectorstore.similarity_search(query, k=3)
+            context = "\n\n".join([d.page_content for d in docs])
+        else:
+            context = ""
+    except Exception as e:
+        context = ""
     return {"retrieved_context": context}
 
 def chat_node(state: ChatState):
-    messages = state["messages"]
+    messages = state.get("messages", [])
     context = state.get("retrieved_context", "")
-    user_msg = messages[-1].content
+    # Safe-get last user message (if any)
+    user_msg = ""
+    if messages:
+        last = messages[-1]
+        user_msg = getattr(last, "content", "") or ""
     system_prompt = f"Use context below to answer accurately:\n\n{context}\n\nQuestion: {user_msg}"
+    # Invoke LLM with only a system prompt followed by the recent messages to avoid echoing the question twice
     response = llm_with_tools.invoke([SystemMessage(content=system_prompt)] + messages)
     return {"messages": [response]}
 
@@ -126,36 +149,78 @@ chatbot = graph.compile(checkpointer=checkpointer)
 # ============= UTILS =============
 def process_user_query(thread_id, user_input):
     """
-    Process user input as a stream and yield AI response chunks.
+    Process user input (non-echoing) and yield a single assistant response.
+    Safely extract text whether the chatbot returns dicts or message objects.
     """
     from langchain_core.messages import HumanMessage
     CONFIG = {"configurable": {"thread_id": thread_id}}
-    
-    # The event stream format is "event: <event_name>\ndata: <data>\n\n"
-    # For simplicy, we'll just yield the data chunks.
-    for chunk in chatbot.stream(
-        {"messages": [HumanMessage(content=user_input)], "query": user_input},
-        config=CONFIG,
-        stream_mode="values", # Use "values" to get the content of the nodes
-    ):
-        # We are interested in the output of the 'chat_node'
-        if "messages" in chunk:
-            last_message = chunk["messages"][-1]
-            if last_message.content:
-                yield last_message.content
+    try:
+        result = chatbot.invoke({"messages": [HumanMessage(content=user_input)], "query": user_input}, config=CONFIG)
+        assistant_text = ""
+
+        # If result is a dict-like structure
+        if isinstance(result, dict):
+            msgs = result.get("messages") or []
+            if msgs:
+                last = msgs[-1]
+                if isinstance(last, dict):
+                    assistant_text = last.get("content") or last.get("text") or ""
+                elif hasattr(last, "content"):
+                    assistant_text = getattr(last, "content", "") or ""
+                elif hasattr(last, "text"):
+                    assistant_text = getattr(last, "text", "") or ""
+                else:
+                    assistant_text = str(last)
+            else:
+                assistant_text = result.get("output", "") or str(result)
+
+        else:
+            # result may be an object with .messages or .content attributes
+            if hasattr(result, "messages"):
+                msgs = getattr(result, "messages") or []
+                if msgs:
+                    last = msgs[-1]
+                    if hasattr(last, "content"):
+                        assistant_text = getattr(last, "content", "") or ""
+                    elif hasattr(last, "text"):
+                        assistant_text = getattr(last, "text", "") or ""
+                    else:
+                        assistant_text = str(last)
+                else:
+                    assistant_text = str(result)
+            else:
+                assistant_text = getattr(result, "content", getattr(result, "text", str(result)))
+
+    except Exception as e:
+        assistant_text = f"Error: {e}"
+
+    yield assistant_text
 
 def get_thread_history(thread_id):
-    """Retrieve message history for a given thread."""
-    from langchain_core.messages import AIMessage, HumanMessage
-    
+    """Retrieve message history for a given thread from the checkpointer."""
     history = []
-    thread_state = checkpointer.get({"configurable": {"thread_id": thread_id}})
-    
-    if thread_state:
-        for msg in thread_state["values"]["messages"]:
-            role = "user" if isinstance(msg, HumanMessage) else "assistant"
-            history.append({"role": role, "content": msg.content})
-            
+    try:
+        cfg = {"configurable": {"thread_id": thread_id}}
+        thread_state = checkpointer.get(cfg)
+        if not thread_state:
+            return history
+        # thread_state may contain a 'values' dict with messages
+        values = thread_state.get("values", thread_state) if isinstance(thread_state, dict) else thread_state
+        msgs = values.get("messages", []) if isinstance(values, dict) else []
+        for m in msgs:
+            # m might be an object with .content or a dict
+            content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+            role = getattr(m, "type", None) or getattr(m, "role", None)
+            if not role and hasattr(m, "__class__"):
+                clsname = m.__class__.__name__.lower()
+                if "human" in clsname:
+                    role = "user"
+                elif "ai" in clsname or "assistant" in clsname:
+                    role = "assistant"
+            if content:
+                history.append({"role": role if role in ("user", "assistant") else "assistant", "content": content})
+    except Exception:
+        pass
     return history
 
 def delete_thread_history(thread_id):
@@ -165,6 +230,16 @@ def delete_thread_history(thread_id):
 
 def retrieve_all_threads():
     all_threads = set()
-    for checkpoint in checkpointer.list(None):
-        all_threads.add(checkpoint.config["configurable"]["thread_id"])
+    try:
+        for checkpoint in checkpointer.list(None):
+            try:
+                cfg = checkpoint.get("configurable") if isinstance(checkpoint, dict) else None
+                if isinstance(cfg, dict):
+                    tid = cfg.get("thread_id") or cfg.get("id")
+                    if tid:
+                        all_threads.add(tid)
+            except Exception:
+                continue
+    except Exception:
+        pass
     return list(all_threads)
